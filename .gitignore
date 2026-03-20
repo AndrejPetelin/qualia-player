@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project-specific - NOW WITH CORRECT PATHS
+music_playlist_generator/*.db
+music_playlist_generator/*.sqlite
+music_playlist_generator/*.sqlite3
+music_playlist_generator/genre_map.json
+music_library_catalog.txt
+music_artists_list.txt
+
+# User data (in home directory, but just in case)
+.music_playlist_generator/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Playlists (user-generated)
+*.m3u
