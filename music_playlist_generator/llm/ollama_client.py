@@ -6,6 +6,7 @@ import requests
 import json
 from typing import List, Dict, Set
 from collections import defaultdict
+from .track_filters import TrackFilter
 
 class OllamaClient:
     def __init__(self, base_url: str, model: str):
@@ -14,10 +15,11 @@ class OllamaClient:
     
     def generate_playlist(self, user_request: str, tracks: List[Dict]) -> Dict:
         """
-        Two-phase approach using Mistral's music knowledge:
-        1. Ask Mistral which artists match the genre/vibe (using music knowledge, not tags)
-        2. Ask Mistral to pick proportions from matching artists
-        3. Match to actual tracks
+        Hybrid approach with track filtering:
+        1. Ask Mistral which artists match
+        2. PYTHON filters tracks by year/album/live/etc
+        3. Ask Mistral to pick proportions (or skip if strict rules)
+        4. Match to actual tracks
         """
         
         # Phase 1: Let Mistral filter artists by music knowledge
@@ -29,18 +31,50 @@ class OllamaClient:
                 'reasoning': "Mistral couldn't find artists matching that request in your library."
             }
         
-        # Phase 2: Extract target duration
+        # Filter to only tracks from matching artists
+        artist_filtered_tracks = [
+            t for t in tracks 
+            if t.get('artist') in matching_artists
+        ]
+        
+        # Phase 2: Apply Python track filters (year, live, album, etc.)
+        track_filter = TrackFilter(user_request)
+        filtered_tracks = track_filter.apply(artist_filtered_tracks)
+        
+        if not filtered_tracks:
+            return {
+                'playlist': [],
+                'reasoning': "Filters removed all tracks. Try a different request or check your metadata."
+            }
+        
+        # Phase 3: If strict rules (one per album, chronological), skip Mistral proportions
+        if track_filter.needs_python_enforcement():
+            # Python already ordered/selected the tracks - just return them!
+            matched = []
+            for track in filtered_tracks:
+                matched.append({
+                    'artist': track['artist'],
+                    'title': track['title']
+                })
+            
+            return {
+                'playlist': matched,
+                'reasoning': f"Selected {len(matched)} tracks with strict filtering (year/album/chronological)"
+            }
+        
+        # Phase 3b: Otherwise, let Mistral pick proportions from filtered tracks
         target_tracks = self._extract_target_duration(user_request)
         
-        # Phase 3: Ask Mistral to select proportions
-        selections = self._get_artist_selections(user_request, list(matching_artists), target_tracks)
+        # Build artist list from filtered tracks
+        filtered_artists = list(set(t['artist'] for t in filtered_tracks))
+        selections = self._get_artist_selections(user_request, filtered_artists, target_tracks)
         
-        # Phase 4: Match to actual tracks
-        matched = self._match_to_tracks(selections, tracks)
+        # Phase 4: Match to filtered tracks
+        matched = self._match_to_tracks(selections, filtered_tracks)
         
         return {
             'playlist': matched,
-            'reasoning': f"Selected {len(matched)} tracks from {len(selections)} artists based on Mistral's music knowledge"
+            'reasoning': f"Selected {len(matched)} tracks from {len(selections)} artists with filtering applied"
         }
     
     def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> Set[str]:
@@ -66,42 +100,45 @@ class OllamaClient:
         
         prompt = f"""You are a music expert. The user wants: "{user_request}"
 
-    Here are the available artists in their music library with sample track names:
-    {catalog_text}
+Here are the available artists in their music library with sample track names:
+{catalog_text}
 
-    Based on YOUR MUSIC KNOWLEDGE, which artists match this request?
+Based on YOUR MUSIC KNOWLEDGE, which artists match this request?
 
-    MATCHING RULES:
+MATCHING RULES:
 
-    For GENRE requests:
-    - Match both EXACT genre and CLOSELY RELATED genres
-    - "prog rock" should include: classic prog (Yes, Genesis, King Crimson), art rock (Pink Floyd), and prog-adjacent artists
-    - "prog metal" should include: progressive metal (Dream Theater, Queensryche), prog-metal fusion (Tool), and metal bands with significant prog elements
-    - "hard rock" should include: classic hard rock (Deep Purple, Whitesnake), hard rock/heavy metal crossover
-    - Be INCLUSIVE rather than pedantic - if a band is commonly associated with the genre, include them
+For GENRE requests:
+- Match both EXACT genre and CLOSELY RELATED genres
+- "prog rock" should include: classic prog (Yes, Genesis, King Crimson), art rock (Pink Floyd), and prog-adjacent artists
+- "prog metal" should include: progressive metal (Dream Theater, Queensryche), prog-metal fusion (Tool), and metal bands with significant prog elements
+- "hard rock" should include: classic hard rock (Deep Purple, Whitesnake), hard rock/heavy metal crossover
+- Be INCLUSIVE rather than pedantic - if a band is commonly associated with the genre, include them
 
-    For ATTRIBUTE requests (like "female singers", "instrumental", "80s"):
-    - Include ALL artists that match, even if it's just one member or some tracks
-    - "female singers" = ANY band with female vocals (Roxette, Heart, Halestorm, Amy Winehouse, Aretha Franklin, Ann Wilson, etc.)
-    - "instrumental" = ANY artist with instrumental tracks
+For ATTRIBUTE requests (like "female singers", "instrumental", "80s"):
+- Include ALL artists that match, even if it's just one member or some tracks
+- "female singers" = ANY band with female vocals (Roxette, Heart, Halestorm, Amy Winehouse, Aretha Franklin, Ann Wilson, etc.)
+- "instrumental" = ANY artist with instrumental tracks
 
-    For SPECIFIC ARTIST requests:
-    - Always include named artists regardless of genre
+For SPECIFIC ARTIST requests:
+- Always include named artists regardless of genre
+- CRITICAL: If user says "ONLY [artist]", "just [artist]", "no other artists", or similar:
+  → ONLY include that specific artist, DO NOT include related/similar artists
+  → Example: "only Whitesnake" → ["Whitesnake"] (NOT Deep Purple, even though Coverdale was in both)
+  → Example: "just Dream Theater, no other bands" → ["Dream Theater"] only
 
-    EXAMPLES:
-    - "prog rock" → Pink Floyd (YES - art rock/psychedelic prog), Dream Theater (NO - that's prog metal)
-    - "prog metal" → Dream Theater (YES), Avenged Sevenfold (YES - significant prog elements)  
-    - "female singers" → Roxette (YES), Heart (YES), Halestorm (YES), Amy Winehouse (YES), Aretha Franklin (YES)
-    - "instrumental" → Joe Satriani (YES - all instrumental), Liquid Tension Experiment (YES), Dream Theater (NO - has vocals), Deep Purple (NO - has vocals even if songs have long solos)
+EXAMPLES:
+- "prog rock" → Pink Floyd (YES - art rock/psychedelic prog), Dream Theater (NO - that's prog metal)
+- "prog metal" → Dream Theater (YES), Avenged Sevenfold (YES - significant prog elements)  
+- "female singers" → Roxette (YES), Heart (YES), Halestorm (YES), Amy Winehouse (YES), Aretha Franklin (YES)
+- "only Whitesnake" → Whitesnake (YES), Deep Purple (NO - user said ONLY Whitesnake)
 
-    Respond ONLY with JSON:
-    {{
-      "matching_artists": ["Artist 1", "Artist 2", "Artist 3"]
-    }}
+Respond ONLY with JSON:
+{{
+  "matching_artists": ["Artist 1", "Artist 2", "Artist 3"]
+}}
 
-    NO explanations, NO preamble, NO markdown, ONLY the JSON object.
-    """
-        
+NO explanations, NO preamble, NO markdown, ONLY the JSON object.
+"""
         # ============================================
         # END OF PROMPT - rest of the method stays the same:
         # ============================================
@@ -263,13 +300,26 @@ NO preamble, NO markdown, NO explanations, ONLY the JSON object.
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError as e:
-            # Try to extract JSON from the response
+            # Try to extract JSON object from the response
             import re
-            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            # Look for {  ...  } with proper nesting
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', cleaned, re.DOTALL)
             if json_match:
                 try:
                     return json.loads(json_match.group())
                 except:
                     pass
             
-            raise Exception(f"Failed to parse JSON: {e}\nResponse: {response_text}")
+            # If still failing, print debug info
+            print(f"\n❌ JSON Parse Error:")
+            print(f"Full response: {response_text}")
+            print(f"Cleaned: {cleaned}")
+            
+            # Last resort - try to build the JSON manually if it looks like just an array
+            if cleaned.startswith('["') or cleaned.startswith("['"):
+                try:
+                    return {"matching_artists": json.loads(cleaned)}
+                except:
+                    pass
+            
+            raise Exception(f"Failed to parse JSON: {e}\nResponse: {response_text[:500]}")

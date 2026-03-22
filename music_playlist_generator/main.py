@@ -1,7 +1,10 @@
 """Music Playlist Generator - Main Application"""
 
 import sys
+import subprocess
+import atexit
 from pathlib import Path
+from datetime import datetime
 import config
 from database.db_manager import MusicDatabase
 from scanner.music_scanner import MusicScanner
@@ -10,6 +13,35 @@ from llm.ollama_client import OllamaClient
 from playlist.generator import PlaylistGenerator
 from ui.chat_window import ChatWindow
 import threading
+import time
+import requests
+
+
+def check_ollama():
+    """Check if Ollama is running"""
+    try:
+        
+        response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        
+        
+        if response.status_code == 200:
+            print("✅ Ollama is running!")
+            return True
+        else:
+            print(f"⚠️  Ollama responded but with status {response.status_code}")
+            return False
+    except requests.exceptions.ConnectionError as e:
+        print(f"❌ Cannot connect to Ollama: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ Error checking Ollama: {e}")
+        return False
+
+def stop_ollama():
+    """Stop Ollama on exit (optional - might want to leave it running)"""
+    # Usually better to leave Ollama running
+    pass
+
 
 class MusicPlaylistApp:
     def __init__(self):
@@ -34,6 +66,8 @@ class MusicPlaylistApp:
     def _startup(self):
         """Initial startup - scan library if needed"""
         track_count = self.db.get_track_count()
+
+    
         
         if track_count == 0:
             self.ui.add_message("System", "Welcome! Please select your music folder to get started.")
@@ -42,6 +76,7 @@ class MusicPlaylistApp:
             self.ui.update_track_count(track_count)
             self.ui.update_folder_label(self.current_folder)
             self._start_folder_monitor()
+    
     
     def _change_music_folder(self, folder: Path):
         """Handle folder change"""
@@ -168,8 +203,9 @@ class MusicPlaylistApp:
                 selected_genres[g] = selected_genres.get(g, 0) + 1
                 selected_artists[t.artist] = selected_artists.get(t.artist, 0) + 1
             
-            # Generate M3U file
-            playlist_path = self.playlist_gen.create_m3u(selected_tracks, f"playlist_{len(selected_tracks)}_tracks")
+            # Create name with timestamp AND track count
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            playlist_path = self.playlist_gen.create_m3u(selected_tracks, f"playlist_{len(selected_tracks)}_tracks_{timestamp}")
             
             # Show result
             reasoning = response.get('reasoning', 'No reasoning provided')
@@ -200,5 +236,13 @@ class MusicPlaylistApp:
 
 
 if __name__ == "__main__":
+
+    
+    # Just check, don't try to start
+    if not check_ollama():
+        print("\nPlease start Ollama manually with: ollama serve")
+        print("Then run this program again.\n")
+        sys.exit(1)
+    
     app = MusicPlaylistApp()
     app.run()
