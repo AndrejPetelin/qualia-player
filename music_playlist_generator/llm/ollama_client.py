@@ -7,6 +7,7 @@ import json
 from typing import List, Dict, Set
 from collections import defaultdict
 from .track_filters import TrackFilter
+import time
 
 class OllamaClient:
     def __init__(self, base_url: str, model: str):
@@ -21,10 +22,12 @@ class OllamaClient:
         3. Ask Mistral to pick proportions (or skip if strict rules)
         4. Match to actual tracks
         """
-        
+        print("Hello???")
+        start = time.time()
         # Phase 1: Let Mistral filter artists by music knowledge
+        t1 = time.time()
         matching_artists = self._get_genre_filtered_artists(user_request, tracks)
-        
+        print(f"⏱️  Mistral artist filter: {time.time() - t1:.1f}s")
         if not matching_artists:
             return {
                 'playlist': [],
@@ -37,18 +40,28 @@ class OllamaClient:
             if t.get('artist') in matching_artists
         ]
         
+        
+        
+
         # Phase 2: Apply Python track filters (year, live, album, etc.)
+        t2 = time.time()
         track_filter = TrackFilter(user_request)
         filtered_tracks = track_filter.apply(artist_filtered_tracks)
         
+        print(f"⏱️  Python filtering: {time.time() - t2:.1f}s")
+
         if not filtered_tracks:
             return {
                 'playlist': [],
                 'reasoning': "Filters removed all tracks. Try a different request or check your metadata."
             }
+
+       
         
         # Phase 3: If strict rules (one per album, chronological), skip Mistral proportions
+        t3 = time.time()
         if track_filter.needs_python_enforcement():
+
             # Python already ordered/selected the tracks - just return them!
             matched = []
             for track in filtered_tracks:
@@ -68,10 +81,14 @@ class OllamaClient:
         # Build artist list from filtered tracks
         filtered_artists = list(set(t['artist'] for t in filtered_tracks))
         selections = self._get_artist_selections(user_request, filtered_artists, target_tracks)
-        
+        print(f"⏱️  Mistral proportions: {time.time() - t3:.1f}s")
         # Phase 4: Match to filtered tracks
+        t4 = time.time()
         matched = self._match_to_tracks(selections, filtered_tracks)
-        
+        print(f"⏱️  Match to tracks: {time.time() - t3:.1f}s")
+
+        print(f"⏱️  TOTAL: {time.time() - start:.1f}s")
+    
         return {
             'playlist': matched,
             'reasoning': f"Selected {len(matched)} tracks from {len(selections)} artists with filtering applied"

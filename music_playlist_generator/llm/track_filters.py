@@ -194,6 +194,8 @@ class TrackFilter:
             result.append(random.choice(album_tracks))
         
         print(f"📀 Returning {len(result)} tracks (one per album)\n")
+        for track in result:
+            print(f"📀 Returning {track} \n")
         
         return result
     
