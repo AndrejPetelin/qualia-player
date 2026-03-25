@@ -184,10 +184,12 @@ class MusicPlaylistApp:
             for selection in response.get('playlist', []):
                 title = selection.get('title')
                 artist = selection.get('artist')
+                album = selection.get('album')
                 
                 # Find matching track
                 for track in all_tracks:
-                    if track.title == title and track.artist == artist:
+                    if track.title == title and track.artist == artist and track.album == album:
+                        print(f"⏱️  Track in main: {track}")
                         selected_tracks.append(track)
                         break
             

@@ -67,12 +67,16 @@ class OllamaClient:
             for track in filtered_tracks:
                 matched.append({
                     'artist': track['artist'],
-                    'title': track['title']
+                    'title': track['title'],
+                    'album': track['album']
                 })
-            
+
+            for track in matched:
+                print(f"⏱️  matched track: {track}")
+            # Return full track data (includes filepath, album, year, etc.)
             return {
                 'playlist': matched,
-                'reasoning': f"Selected {len(matched)} tracks with strict filtering (year/album/chronological)"
+                'reasoning': f"Selected {len(filtered_tracks)} tracks with strict filtering (year/album/chronological)"
             }
         
         # Phase 3b: Otherwise, let Mistral pick proportions from filtered tracks
@@ -292,10 +296,13 @@ NO preamble, NO markdown, NO explanations, ONLY the JSON object.
             random.shuffle(artist_tracks)
             selected = artist_tracks[:num_tracks]
             
+            # Return the FULL track data (includes filepath, album, year, genre, etc.)
+            # This ensures we get the exact track that was filtered, not a different version
             for track in selected:
                 matched.append({
                     'artist': track['artist'],
-                    'title': track['title']
+                    'title': track['title'],
+                    'album': track['album']
                 })
         
         return matched
