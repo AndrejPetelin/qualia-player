@@ -91,77 +91,45 @@ class OllamaClient:
             'artist_reasoning': artist_reasoning
         }
     
-    def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> tuple[Set[str], str]:
-        """Ask Mistral which artists match the request using its music knowledge
-        Returns: (set of matching artists, reasoning string)
-        """
+    def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> tuple[Set[str], Set[str]]:
+        """Ask Mistral which artists match the request using injected metadata."""
         
-        # Build artist catalog with sample track names (helps Mistral recognize artists)
-        artist_catalog = defaultdict(list)
+        # Build catalog with GENRE hints to prevent "Barracuda" type mistakes
+        artist_catalog = defaultdict(lambda: {'genres': set(), 'samples': []})
         for track in tracks:
             artist = track['artist']
-            if len(artist_catalog[artist]) < 3:  # Keep 3 sample tracks per artist
-                artist_catalog[artist].append(track['title'])
+            if track.get('genre'):
+                artist_catalog[artist]['genres'].add(track['genre'])
+            if len(artist_catalog[artist]['samples']) < 2:
+                artist_catalog[artist]['samples'].append(track['title'])
         
-        # Format for Mistral - keep it concise
         catalog_lines = []
-        for artist, samples in sorted(artist_catalog.items()):
-            catalog_lines.append(f"- {artist} (sample tracks: {', '.join(samples)})")
+        for artist, data in sorted(artist_catalog.items()):
+            genres = ", ".join(list(data['genres'])[:3])
+            samples = ", ".join(data['samples'])
+            catalog_lines.append(f"- {artist} [Genres: {genres}] (Samples: {samples})")
         
         catalog_text = '\n'.join(catalog_lines)
+        print(f"⏱️  catalog lines: {catalog_text}")
         
-        # ============================================
-        # THIS IS THE PROMPT - REPLACE THIS WHOLE SECTION:
-        # ============================================
-        
-        prompt = f"""You are a music expert. The user wants: "{user_request}"
+        prompt = f"""You are a music expert. User wants: "{user_request}"
 
-Here are the ONLY artists available in their music library with sample track names:
-{catalog_text}
+    Available library artists with their metadata:
+    {catalog_text}
 
-CRITICAL: You must ONLY select from the artists listed above. DO NOT suggest artists that are not in this list, even if they would fit the request perfectly.
+    CRITICAL: Match ONLY artists who have music strictly fitting the mood/genre of "{user_request}".
+    - If "ballads" are requested, avoid artists/tracks marked as "High Energy" or "Hard Rock" unless they are known for slow songs.
+    - Be inclusive, but prioritize the primary vibe requested.
 
-Based on the artists AVAILABLE IN THE LIST ABOVE, which ones match this request?
-
-MATCHING RULES:
-
-For GENRE requests:
-- Match both EXACT genre and CLOSELY RELATED genres
-- "prog rock" should include: classic prog (Yes, Genesis, King Crimson), art rock (Pink Floyd), and prog-adjacent artists
-- "prog metal" should include: progressive metal (Dream Theater, Queensryche), prog-metal fusion (Tool), and metal bands with significant prog elements
-- "hard rock" should include: classic hard rock (Deep Purple, Whitesnake), hard rock/heavy metal crossover
-- Be INCLUSIVE rather than pedantic - if a band is commonly associated with the genre, include them
-
-For ATTRIBUTE requests (like "female singers", "instrumental", "80s"):
-- Include ALL artists that match, even if it's just one member or some tracks
-- "female singers" = ANY band with female vocals (Roxette, Heart, Halestorm, Amy Winehouse, Aretha Franklin, Ann Wilson, etc.)
-- "instrumental" = ANY artist with instrumental tracks
-
-For SPECIFIC ARTIST requests:
-- Always include named artists regardless of genre
-- CRITICAL: If user says "ONLY [artist]", "just [artist]", "no other artists", or similar:
-  → ONLY include that specific artist, DO NOT include related/similar artists
-  → Example: "only Whitesnake" → ["Whitesnake"] (NOT Deep Purple, even though Coverdale was in both)
-  → Example: "just Dream Theater, no other bands" → ["Dream Theater"] only
-
-EXAMPLES:
-- "prog rock" → Pink Floyd (YES - art rock/psychedelic prog), Dream Theater (NO - that's prog metal)
-- "prog metal" → Dream Theater (YES), Avenged Sevenfold (YES - significant prog elements)  
-- "female singers" → Roxette (YES), Heart (YES), Halestorm (YES), Amy Winehouse (YES), Aretha Franklin (YES)
-- "only Whitesnake" → Whitesnake (YES), Deep Purple (NO - user said ONLY Whitesnake)
-
-Respond ONLY with JSON:
-{{
-  "matching_artists": ["Artist 1", "Artist 2", "Artist 3"],
-  "reasoning": "Brief explanation of why these artists match (2-3 sentences)"
-}}
-
-NO explanations outside the JSON, NO preamble, NO markdown, ONLY the JSON object.
-"""
-        # ============================================
-        # END OF PROMPT - rest of the method stays the same:
-        # ============================================
-        
+    Respond ONLY with JSON:
+    {{
+      "matching_artists": ["Artist 1", "Artist 2"],
+      "reasoning": "Explain your logic based on the provided genres and samples."
+    }}"""
+    # ============================================
+    # END OF PROMPT - rest of the method stays the same:
+    # ============================================
+    
         try:
             response = requests.post(
                 f"{self.base_url}/api/generate",
@@ -214,37 +182,34 @@ NO explanations outside the JSON, NO preamble, NO markdown, ONLY the JSON object
             return 15  # Default ~1 hour
     
     def _get_artist_selections(self, user_request: str, artists: List[str], target_tracks: int) -> List[Dict]:
-        """Ask Mistral to decide how many tracks from each artist"""
+        """Ask Mistral to decide proportions with strict VARIETY rules."""
         
         artists_list = '\n'.join([f"- {artist}" for artist in sorted(artists)])
         
-        prompt = f"""You are creating a playlist. The user wants: "{user_request}"
+        # Calculate variety constraints dynamically
+        min_artists = max(5, target_tracks // 2)
+        max_per_artist = 2 if target_tracks <= 20 else 3
 
-Available artists (already filtered to match the request):
-{artists_list}
+        prompt = f"""You are creating a "{user_request}" playlist.
+    Target: {target_tracks} tracks.
 
-Target: approximately {target_tracks} tracks total
+    Available matching artists:
+    {artists_list}
 
-Your job: Decide how many tracks from each artist for good variety and flow.
+    STRICT SELECTION RULES:
+    1. VARIETY: You MUST select at least {min_artists} different artists.
+    2. LIMIT: Maximum {max_per_artist} tracks per artist. Do not cluster!
+    3. Total must be approximately {target_tracks}.
+    4. Prioritize artists mentioned in: "{user_request}".
 
-Rules:
-1. ONLY select from artists listed above
-2. Total should be around {target_tracks} tracks (can be slightly over/under)
-3. Vary the distribution - don't give everyone equal amounts
-4. If a specific artist was mentioned, prioritize them
-5. Consider variety - spread across multiple artists
-
-Respond ONLY with JSON:
-{{
-  "selections": [
-    {{"artist": "Artist Name", "num_tracks": 5}},
-    {{"artist": "Another Artist", "num_tracks": 3}},
-    ...
-  ]
-}}
-
-NO preamble, NO markdown, NO explanations, ONLY the JSON object.
-"""
+    Respond ONLY with JSON:
+    {{
+      "selections": [
+        {{"artist": "Name", "num_tracks": 1, "reasoning": "Fits the mood"}},
+        ...
+      ]
+    }}
+    """
         
         try:
             response = requests.post(
