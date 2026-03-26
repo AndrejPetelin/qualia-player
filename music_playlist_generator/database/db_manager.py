@@ -30,6 +30,30 @@ class MusicDatabase:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_artist ON tracks(artist)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_genre ON tracks(genre)")
+            
+            # NEW: Table to store music folders
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS music_folders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    folder_path TEXT UNIQUE NOT NULL
+                )
+            """)
+    
+    def add_music_folder(self, folder_path: str):
+        """Add a music folder to the list"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT OR IGNORE INTO music_folders (folder_path) VALUES (?)", (folder_path,))
+    
+    def get_music_folders(self) -> List[str]:
+        """Get all configured music folders"""
+        with sqlite3.connect(self.db_path) as conn:
+            rows = conn.execute("SELECT folder_path FROM music_folders").fetchall()
+            return [row[0] for row in rows]
+    
+    def remove_music_folder(self, folder_path: str):
+        """Remove a music folder from the list"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM music_folders WHERE folder_path = ?", (folder_path,))
     
     def add_track(self, track: Track) -> int:
         """Add or update a track in the database"""

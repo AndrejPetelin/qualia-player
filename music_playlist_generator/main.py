@@ -50,7 +50,12 @@ class MusicPlaylistApp:
         self.llm = OllamaClient(config.OLLAMA_BASE_URL, config.OLLAMA_MODEL)
         self.playlist_gen = PlaylistGenerator(config.PLAYLIST_OUTPUT)
         
-        self.current_folder = config.MUSIC_FOLDER
+        # Load all configured music folders from database
+        self.music_folders = self.db.get_music_folders()
+        if not self.music_folders:
+            # If no folders configured, use the default from config
+            self.music_folders = [str(config.MUSIC_FOLDER)]
+        
         self.folder_monitor = None
         
         # Create UI
@@ -72,36 +77,70 @@ class MusicPlaylistApp:
         if track_count == 0:
             self.ui.add_message("System", "Welcome! Please select your music folder to get started.")
         else:
-            self.ui.add_message("System", f"Library loaded: {track_count} tracks")
+            self.ui.add_message("System", f"Library loaded: {track_count} tracks from {len(self.music_folders)} folder(s)")
             self.ui.update_track_count(track_count)
-            self.ui.update_folder_label(self.current_folder)
+            # Show all configured folders
+            folders_text = "\n".join([f"  • {f}" for f in self.music_folders])
+            self.ui.update_folder_label(f"Monitoring {len(self.music_folders)} folder(s):\n{folders_text}")
             self._start_folder_monitor()
     
     
     def _change_music_folder(self, folder: Path):
-        """Handle folder change"""
-        self.current_folder = folder
-        self.ui.update_folder_label(folder)
-        self.ui.add_message("System", f"Scanning {folder}...")
+        """Handle adding a new music folder"""
+        folder_str = str(folder)
         
-        # Stop existing monitor if any
-        if self.folder_monitor:
-            self.folder_monitor.stop()
+        # Add to database
+        self.db.add_music_folder(folder_str)
         
-        # Scan in background thread
-        thread = threading.Thread(target=self._scan_library, daemon=True)
+        # Add to our list if not already there
+        if folder_str not in self.music_folders:
+            self.music_folders.append(folder_str)
+        
+        # Update UI
+        folders_text = "\n".join([f"  • {f}" for f in self.music_folders])
+        self.ui.update_folder_label(f"Monitoring {len(self.music_folders)} folder(s):\n{folders_text}")
+        self.ui.add_message("System", f"Added folder: {folder}\nScanning...")
+        
+        # Scan just this new folder in background thread
+        thread = threading.Thread(target=self._scan_single_folder, args=(folder,), daemon=True)
         thread.start()
     
-    def _scan_library(self):
-        """Scan the music library (runs in background thread)"""
-        tracks = self.scanner.scan_folder(self.current_folder, config.AUDIO_EXTENSIONS)
+    def _scan_single_folder(self, folder: Path):
+        """Scan a single music folder (runs in background thread)"""
+        tracks = self.scanner.scan_folder(folder, config.AUDIO_EXTENSIONS)
         
         # Update database
         for track in tracks:
             self.db.add_track(track)
         
         count = self.db.get_track_count()
-        self.ui.add_message("System", f"Scan complete! Found {count} tracks.")
+        self.ui.add_message("System", f"Scan complete! Library now has {count} total tracks.")
+        self.ui.update_track_count(count)
+        
+        # Restart monitoring for all folders
+        self._start_folder_monitor()
+    
+    def _scan_library(self):
+        """Scan ALL configured music folders (runs in background thread)"""
+        total_scanned = 0
+        
+        for folder_str in self.music_folders:
+            folder = Path(folder_str)
+            if not folder.exists():
+                self.ui.add_message("System", f"⚠️ Folder not found: {folder}")
+                continue
+            
+            self.ui.add_message("System", f"Scanning {folder}...")
+            tracks = self.scanner.scan_folder(folder, config.AUDIO_EXTENSIONS)
+            
+            # Update database
+            for track in tracks:
+                self.db.add_track(track)
+            
+            total_scanned += len(tracks)
+        
+        count = self.db.get_track_count()
+        self.ui.add_message("System", f"Scan complete! Found {total_scanned} tracks across {len(self.music_folders)} folder(s). Total library: {count} tracks.")
         self.ui.update_track_count(count)
         
         # Start monitoring
@@ -120,16 +159,20 @@ class MusicPlaylistApp:
         thread.start()
     
     def _start_folder_monitor(self):
-        """Start monitoring the music folder for changes"""
+        """Start monitoring all music folders for changes"""
         if self.folder_monitor:
             self.folder_monitor.stop()
         
-        self.folder_monitor = FolderMonitor(
-            self.current_folder,
-            config.AUDIO_EXTENSIONS,
-            self._on_folder_change
-        )
-        self.folder_monitor.start()
+        # For now, just monitor the first folder
+        # TODO: Could create multiple monitors or a single monitor for all folders
+        if self.music_folders:
+            first_folder = Path(self.music_folders[0])
+            self.folder_monitor = FolderMonitor(
+                first_folder,
+                config.AUDIO_EXTENSIONS,
+                self._on_folder_change
+            )
+            self.folder_monitor.start()
     
     def _on_folder_change(self):
         """Called when folder changes detected"""
@@ -184,12 +227,10 @@ class MusicPlaylistApp:
             for selection in response.get('playlist', []):
                 title = selection.get('title')
                 artist = selection.get('artist')
-                album = selection.get('album')
                 
                 # Find matching track
                 for track in all_tracks:
-                    if track.title == title and track.artist == artist and track.album == album:
-                        print(f"⏱️  Track in main: {track}")
+                    if track.title == title and track.artist == artist:
                         selected_tracks.append(track)
                         break
             

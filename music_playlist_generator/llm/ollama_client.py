@@ -26,12 +26,13 @@ class OllamaClient:
         start = time.time()
         # Phase 1: Let Mistral filter artists by music knowledge
         t1 = time.time()
-        matching_artists = self._get_genre_filtered_artists(user_request, tracks)
+        matching_artists, artist_reasoning = self._get_genre_filtered_artists(user_request, tracks)
         print(f"⏱️  Mistral artist filter: {time.time() - t1:.1f}s")
         if not matching_artists:
             return {
                 'playlist': [],
-                'reasoning': "Mistral couldn't find artists matching that request in your library."
+                'reasoning': "Mistral couldn't find artists matching that request in your library.",
+                'artist_reasoning': artist_reasoning
             }
         
         # Filter to only tracks from matching artists
@@ -39,7 +40,6 @@ class OllamaClient:
             t for t in tracks 
             if t.get('artist') in matching_artists
         ]
-        
         
         
 
@@ -53,7 +53,8 @@ class OllamaClient:
         if not filtered_tracks:
             return {
                 'playlist': [],
-                'reasoning': "Filters removed all tracks. Try a different request or check your metadata."
+                'reasoning': "Filters removed all tracks. Try a different request or check your metadata.",
+                'artist_reasoning': artist_reasoning
             }
 
        
@@ -63,20 +64,11 @@ class OllamaClient:
         if track_filter.needs_python_enforcement():
 
             # Python already ordered/selected the tracks - just return them!
-            matched = []
-            for track in filtered_tracks:
-                matched.append({
-                    'artist': track['artist'],
-                    'title': track['title'],
-                    'album': track['album']
-                })
-
-            for track in matched:
-                print(f"⏱️  matched track: {track}")
             # Return full track data (includes filepath, album, year, etc.)
             return {
-                'playlist': matched,
-                'reasoning': f"Selected {len(filtered_tracks)} tracks with strict filtering (year/album/chronological)"
+                'playlist': filtered_tracks,
+                'reasoning': f"Selected {len(filtered_tracks)} tracks with strict filtering (year/album/chronological)",
+                'artist_reasoning': artist_reasoning
             }
         
         # Phase 3b: Otherwise, let Mistral pick proportions from filtered tracks
@@ -95,11 +87,14 @@ class OllamaClient:
     
         return {
             'playlist': matched,
-            'reasoning': f"Selected {len(matched)} tracks from {len(selections)} artists with filtering applied"
+            'reasoning': f"Selected {len(matched)} tracks from {len(selections)} artists with filtering applied",
+            'artist_reasoning': artist_reasoning
         }
     
-    def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> Set[str]:
-        """Ask Mistral which artists match the request using its music knowledge"""
+    def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> tuple[Set[str], str]:
+        """Ask Mistral which artists match the request using its music knowledge
+        Returns: (set of matching artists, reasoning string)
+        """
         
         # Build artist catalog with sample track names (helps Mistral recognize artists)
         artist_catalog = defaultdict(list)
@@ -121,10 +116,12 @@ class OllamaClient:
         
         prompt = f"""You are a music expert. The user wants: "{user_request}"
 
-Here are the available artists in their music library with sample track names:
+Here are the ONLY artists available in their music library with sample track names:
 {catalog_text}
 
-Based on YOUR MUSIC KNOWLEDGE, which artists match this request?
+CRITICAL: You must ONLY select from the artists listed above. DO NOT suggest artists that are not in this list, even if they would fit the request perfectly.
+
+Based on the artists AVAILABLE IN THE LIST ABOVE, which ones match this request?
 
 MATCHING RULES:
 
@@ -155,10 +152,11 @@ EXAMPLES:
 
 Respond ONLY with JSON:
 {{
-  "matching_artists": ["Artist 1", "Artist 2", "Artist 3"]
+  "matching_artists": ["Artist 1", "Artist 2", "Artist 3"],
+  "reasoning": "Brief explanation of why these artists match (2-3 sentences)"
 }}
 
-NO explanations, NO preamble, NO markdown, ONLY the JSON object.
+NO explanations outside the JSON, NO preamble, NO markdown, ONLY the JSON object.
 """
         # ============================================
         # END OF PROMPT - rest of the method stays the same:
@@ -184,16 +182,19 @@ NO explanations, NO preamble, NO markdown, ONLY the JSON object.
             result = response.json()
             parsed = self._parse_response(result['response'])
             matching = set(parsed.get('matching_artists', []))
+            reasoning = parsed.get('reasoning', 'No reasoning provided')
             
-            # DEBUG: Print what Mistral filtered to
-            print(f"\n🎵 DEBUG - Mistral filtered to these artists: {sorted(matching)}\n")
+            # DEBUG: Print what Mistral filtered to AND why
+            print(f"\n🎵 Mistral's artist filter:")
+            print(f"   Artists: {sorted(matching)}")
+            print(f"   Reasoning: {reasoning}\n")
             
-            return matching
+            return matching, reasoning
             
         except Exception as e:
             print(f"Error in genre filtering: {e}")
-            # Fallback: return empty set
-            return set()
+            # Fallback: return empty set and error message
+            return set(), f"Error: {str(e)}"
     
     def _extract_target_duration(self, user_request: str) -> int:
         """Extract target number of tracks from request"""
@@ -299,11 +300,7 @@ NO preamble, NO markdown, NO explanations, ONLY the JSON object.
             # Return the FULL track data (includes filepath, album, year, genre, etc.)
             # This ensures we get the exact track that was filtered, not a different version
             for track in selected:
-                matched.append({
-                    'artist': track['artist'],
-                    'title': track['title'],
-                    'album': track['album']
-                })
+                matched.append(track)
         
         return matched
     
