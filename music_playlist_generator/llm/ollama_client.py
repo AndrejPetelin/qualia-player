@@ -91,40 +91,39 @@ class OllamaClient:
             'artist_reasoning': artist_reasoning
         }
     
-    def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> tuple[Set[str], Set[str]]:
-        """Ask Mistral which artists match the request using injected metadata."""
-        
-        # Build catalog with GENRE hints to prevent "Barracuda" type mistakes
-        artist_catalog = defaultdict(lambda: {'genres': set(), 'samples': []})
+    def _get_genre_filtered_artists(self, user_request: str, tracks: List[Dict]) -> tuple[Set[str], str]:
+        # Grouping with more detail to help Mistral distinguish styles
+        artist_catalog = defaultdict(lambda: {'genres': set(), 'titles': []})
         for track in tracks:
             artist = track['artist']
             if track.get('genre'):
                 artist_catalog[artist]['genres'].add(track['genre'])
-            if len(artist_catalog[artist]['samples']) < 2:
-                artist_catalog[artist]['samples'].append(track['title'])
+            if len(artist_catalog[artist]['titles']) < 5: # Give it more songs to look at
+                artist_catalog[artist]['titles'].append(track['title'])
         
         catalog_lines = []
         for artist, data in sorted(artist_catalog.items()):
-            genres = ", ".join(list(data['genres'])[:3])
-            samples = ", ".join(data['samples'])
-            catalog_lines.append(f"- {artist} [Genres: {genres}] (Samples: {samples})")
+            genres = ", ".join(list(data['genres']))
+            titles = ", ".join(data['titles'])
+            catalog_lines.append(f"- {artist} [Tags: {genres}] (Tracks: {titles})")
         
         catalog_text = '\n'.join(catalog_lines)
-        print(f"⏱️  catalog lines: {catalog_text}")
-        
-        prompt = f"""You are a music expert. User wants: "{user_request}"
 
-    Available library artists with their metadata:
+        prompt = f"""You are a strict Music Librarian. User Request: "{user_request}"
+
+    Available Library:
     {catalog_text}
 
-    CRITICAL: Match ONLY artists who have music strictly fitting the mood/genre of "{user_request}".
-    - If "ballads" are requested, avoid artists/tracks marked as "High Energy" or "Hard Rock" unless they are known for slow songs.
-    - Be inclusive, but prioritize the primary vibe requested.
+    CRITICAL FILTERING RULES:
+    1. If the request is for "Ballads", you MUST reject artists if their provided 'Tracks' and 'Tags' suggest mostly high-tempo, aggressive, or heavy music (e.g., Thrash, Speed Metal, Hard Rock) UNLESS you are 100% certain they have famous slow ballads.
+    2. "Outta Get Me" is NOT a ballad. "Barracuda" is NOT a ballad. "Painkiller" is NOT a ballad.
+    3. If an artist like 'Ennio Morricone' or 'Amy Winehouse' doesn't fit the "Rock" part of "Rock Ballad", REJECT them.
+    4. Be pedantic. It is better to have a shorter list of perfect matches than a long list of wrong ones.
 
     Respond ONLY with JSON:
     {{
       "matching_artists": ["Artist 1", "Artist 2"],
-      "reasoning": "Explain your logic based on the provided genres and samples."
+      "reasoning": "Explain why these specific artists were chosen for the '{user_request}' vibe."
     }}"""
     # ============================================
     # END OF PROMPT - rest of the method stays the same:
@@ -201,6 +200,8 @@ class OllamaClient:
     2. LIMIT: Maximum {max_per_artist} tracks per artist. Do not cluster!
     3. Total must be approximately {target_tracks}.
     4. Prioritize artists mentioned in: "{user_request}".
+    5. Only select an artist if you can confirm they have songs in the track's list provided earlier that match the "{user_request}" mood.
+    6. If, for example, the user wants a ballad, avoid any artist whose Tracks sample looks like high-energy hits 
 
     Respond ONLY with JSON:
     {{

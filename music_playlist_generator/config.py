@@ -14,7 +14,6 @@ AUDIO_EXTENSIONS = {'.mp3', '.flac', '.ogg', '.m4a', '.wav', '.opus'}
 
 # Ollama settings
 OLLAMA_BASE_URL = "http://localhost:11434"
-OLLAMA_MODEL = "mistral"  # Change to whatever model you have
-
+OLLAMA_MODEL = "mistral:7b-instruct-v0.3-q2_K"
 # Playlist output folder
 PLAYLIST_OUTPUT = Path.home() / "Music" / "Playlists"
